@@ -222,6 +222,7 @@ void Tutorial14_ComputeShader::CreateUpdateParticlePSO()
     PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
 
     PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
     // clang-format off
     ShaderResourceVariableDesc Vars[] = 
     {
@@ -436,6 +437,40 @@ void Tutorial14_ComputeShader::Render()
         ConstData->i2ParticleGridSize.x = iParticleGridWidth;
         ConstData->i2ParticleGridSize.y = m_NumParticles / iParticleGridWidth;
     }
+
+    // Actualizar la textura de velocidad del fluido en el SRB si existe
+    if (m_pFluidSim && m_pMoveParticlesSRB)
+    {
+        // Obtener textura de velocidad del fluido
+        ITextureView* pFluidVelocitySRV = m_pFluidSim->GetVelocitySRV();
+        if (pFluidVelocitySRV)
+        {
+            // Actualizar la variable en el SRB con la textura de velocidad actual
+            auto* pFluidVelocityVar = m_pMoveParticlesSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_FluidVelocityTexture");
+            if (pFluidVelocityVar)
+            {
+                pFluidVelocityVar->Set(pFluidVelocitySRV);
+            }
+        }
+    }
+
+    // Viewport para toda la ejecución
+    Viewport VP;
+    VP.Width    = static_cast<float>(m_pSwapChain->GetDesc().Width);
+    VP.Height   = static_cast<float>(m_pSwapChain->GetDesc().Height);
+    VP.MinDepth = 0.0f;
+    VP.MaxDepth = 1.0f;
+    VP.TopLeftX = 0.0f;
+    VP.TopLeftY = 0.0f;
+    m_pImmediateContext->SetViewports(1, &VP, 0, 0);
+
+    // Asegurar que las scissor rects estén configuradas correctamente
+    Rect scissorRect;
+    scissorRect.left   = 0;
+    scissorRect.top    = 0;
+    scissorRect.right  = static_cast<long>(VP.Width);
+    scissorRect.bottom = static_cast<long>(VP.Height);
+    m_pImmediateContext->SetScissorRects(1, &scissorRect, 0, 0);
 
     DispatchComputeAttribs DispatAttribs;
     DispatAttribs.ThreadGroupCountX = (m_NumParticles + m_ThreadGroupSize - 1) / m_ThreadGroupSize;

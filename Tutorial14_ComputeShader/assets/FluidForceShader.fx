@@ -1,6 +1,4 @@
-// Mejorar el shader de fuerzas para fluidos más dinámicos
-// FluidForceShader.fx 
-
+// FluidForceShader.fx - Versión más calmada
 Texture2D g_VelocityTexture;
 SamplerState g_LinearSampler;
 
@@ -35,30 +33,33 @@ float4 main(PSInput PSIn) : SV_TARGET
     float2 delta = pixelPos - ForcePosition;
     float dist = length(delta);
     
-    // Aplicar fuerza con radio más amplio
-    float extendedRadius = ForceRadius * 1.5;
+    // Aplicar fuerza con radio más amplio pero intensidad reducida
+    float extendedRadius = ForceRadius * 1.7; // Aumentado de 1.5 a 1.7
     if (dist < extendedRadius)
     {
-        // La fuerza disminuye con la distancia (función gaussiana)
-        float factor = exp(-dist * dist / (ForceRadius * ForceRadius * 0.7));
+        // La fuerza disminuye con la distancia (función gaussiana más suave)
+        float factor = exp(-dist * dist / (ForceRadius * ForceRadius * 0.9)); // Más suave
         
-        // Aumentar la intensidad de la fuerza
-        float forceIntensity = 2.5; // Amplificado para mayor efecto visual
+        // Reducir la intensidad de la fuerza para un fluido más calmado
+        float forceIntensity = 1.5; // Reducido de 2.5 a 1.5
         velocity += ForceVector * factor * TimeStep * forceIntensity;
         
-        // Añadir una rotación adicional para aumentar el efecto de remolino
+        // Reducir la rotación adicional para un efecto menos caótico
         float2 perpendicular = float2(-delta.y, delta.x);
-        perpendicular = normalize(perpendicular) * length(ForceVector) * 0.3;
+        perpendicular = normalize(perpendicular) * length(ForceVector) * 0.2; // Reducido de 0.3 a 0.2
         velocity += perpendicular * factor * TimeStep;
     }
     
-    // Añadir un poco de fuerza aleatoria para mantener el fluido activo
+    // Reducir la magnitud del ruido para mantener el fluido estable
     float2 noise = float2(
-        sin(pixelPos.x * 50.0 + TimeStep * 2.0) * cos(pixelPos.y * 60.0 + TimeStep),
-        cos(pixelPos.x * 60.0 + TimeStep) * sin(pixelPos.y * 50.0 + TimeStep * 2.0)
-    ) * 0.01;
+        sin(pixelPos.x * 40.0 + TimeStep * 1.5) * cos(pixelPos.y * 45.0 + TimeStep * 0.8),
+        cos(pixelPos.x * 45.0 + TimeStep * 0.8) * sin(pixelPos.y * 40.0 + TimeStep * 1.5)
+    ) * 0.007; // Reducido de 0.01 a 0.007
     
     velocity += noise * TimeStep;
+    
+    // Aplicar amortiguación para un fluido más estable
+    velocity *= (1.0 - TimeStep * 0.1); // Añadir pequeña amortiguación global
     
     return float4(velocity, 0.0, 1.0);
 }

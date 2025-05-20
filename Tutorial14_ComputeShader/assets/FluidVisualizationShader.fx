@@ -1,4 +1,4 @@
-// FluidVisualizationShader.fx - Visualización mejorada con mayor opacidad
+// FluidVisualizationShader.fx - Colores agradables y buena visibilidad de partículas
 Texture2D g_VelocityTexture;
 SamplerState g_LinearSampler;
 
@@ -28,61 +28,45 @@ float4 main(PSInput PSIn) : SV_TARGET
     // Leer velocidad en este punto
     float2 velocity = g_VelocityTexture.Sample(g_LinearSampler, PSIn.TexCoord).xy;
     
-    // Calcular magnitud del flujo - amplificar para mejor visualización
-    float speed = length(velocity) * 10.0; // Amplificado por 10
+    // Calcular magnitud del flujo
+    float speed = length(velocity) * 5.0; // Menor amplificación para colores más suaves
     
-    // Mapear la dirección de velocidad a un color usando HSV
-    float angle = atan2(velocity.y, velocity.x) / 3.14159265359; // Normalizar a [-1, 1]
+    // Calcular dirección como ángulo y normalizar a [0,1]
+    float angle = atan2(velocity.y, velocity.x) / (3.14159265 * 2.0) + 0.5;
     
-    // Convertir ángulo a tono (hue)
-    float hue = (angle + 1.0) * 0.5; // Normalizar a [0, 1]
+    // Definir una paleta de colores agradables (tonos azules-púrpuras)
+    // Estos colores son suaves y funcionan bien incluso si convergen
+    float3 color1 = float3(0.2, 0.3, 0.55); // Azul oscuro
+    float3 color2 = float3(0.3, 0.4, 0.7);  // Azul medio
+    float3 color3 = float3(0.5, 0.4, 0.8);  // Púrpura medio
+    float3 color4 = float3(0.7, 0.4, 0.6);  // Rosa suave
     
-    // Crear un color HSV - saturación mayor para colores más vibrantes
-    float3 hsv = float3(hue, 0.9, 1.0);
+    // Interpolar entre colores basado en el ángulo
+    float3 baseColor;
+    if (angle < 0.25) {
+        baseColor = lerp(color1, color2, angle * 4.0);
+    } else if (angle < 0.5) {
+        baseColor = lerp(color2, color3, (angle - 0.25) * 4.0);
+    } else if (angle < 0.75) {
+        baseColor = lerp(color3, color4, (angle - 0.5) * 4.0);
+    } else {
+        baseColor = lerp(color4, color1, (angle - 0.75) * 4.0);
+    }
     
-    // Convertir HSV a RGB 
-    float3 rgb;
+    // Color base para velocidad cero/baja (muy suave y transparente)
+    float3 zeroColor = float3(0.15, 0.15, 0.25); 
     
-    // Implementación de HSV a RGB
-    float h = hsv.x * 6.0;
-    float i = floor(h);
-    float f = h - i;
-    float p = hsv.z * (1.0 - hsv.y);
-    float q = hsv.z * (1.0 - hsv.y * f);
-    float t = hsv.z * (1.0 - hsv.y * (1.0 - f));
+    // Mezclar basado en velocidad
+    float3 finalColor = lerp(zeroColor, baseColor, saturate(speed));
     
-    if (i == 0.0) rgb = float3(hsv.z, t, p);
-    else if (i == 1.0) rgb = float3(q, hsv.z, p);
-    else if (i == 2.0) rgb = float3(p, hsv.z, t);
-    else if (i == 3.0) rgb = float3(p, q, hsv.z);
-    else if (i == 4.0) rgb = float3(t, p, hsv.z);
-    else rgb = float3(hsv.z, p, q);
+    // Añadir rejilla sutil
+    float2 grid = frac(PSIn.TexCoord * 15.0);
+    float gridLine = (grid.x > 0.93 || grid.y > 0.93) ? 0.1 : 0.0;
+    finalColor += float3(gridLine, gridLine, gridLine);
     
-    // Escalar color según magnitud - más brillante para mayor velocidad
-    float brightness = saturate(speed * 1.5); // Escalar para mejor visualización
-    rgb = lerp(float3(0.2, 0.2, 0.3), rgb, brightness); // Color base más oscuro
+    // Transparencia moderada para que se vean las partículas
+    // Más transparente en general, pero más opaco en zonas de alta velocidad
+    float alpha = saturate(0.2 + speed * 0.2);
     
-    // Efecto de líneas de flujo - añade un patrón de líneas
-    float2 scaledPos = PSIn.TexCoord * 30.0; // Escala para un patrón más denso
-    float2 flowOffset = velocity * TimeStep * 15.0; // Aumentado para movimiento más visible
-    float linePattern = sin((scaledPos.x + flowOffset.x) * 3.14) * 
-                       sin((scaledPos.y + flowOffset.y) * 3.14);
-    linePattern = saturate(abs(linePattern) * 6.0); // Más intenso
-    
-    // Mezclar el patrón de líneas con el color base
-    rgb = lerp(rgb, float3(1.0, 1.0, 1.0), linePattern * 0.3); // Mayor intensidad
-    
-    // Aplicar transparencia con mayor opacidad
-    float alpha = saturate(brightness * 0.6 + 0.2); // Base de 0.2 + hasta 0.6 más
-    
-    // Aumentar opacidad en zonas de mayor velocidad
-    alpha = lerp(alpha, 0.8, brightness * 0.5);
-    
-    // Efecto de viñeta para desvanecer en bordes
-    float2 center = PSIn.TexCoord - 0.5;
-    float len = length(center * 1.8); // Radio ajustado 
-    float vignette = 1.0 - smoothstep(0.4, 0.75, len);
-    alpha *= vignette;
-    
-    return float4(rgb, alpha);
+    return float4(finalColor, alpha);
 }

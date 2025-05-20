@@ -1,4 +1,4 @@
-// FluidPixelShader.fx - Shader de advección
+// FluidPixelShader.fx - Shader de advección simplificado
 Texture2D g_VelocityTexture;
 SamplerState g_LinearSampler;
 
@@ -35,6 +35,9 @@ float4 main(PSInput PSIn) : SV_TARGET
     
     // Aplicar difusión basada en viscosidad
     float2 result = lerp(velocity, prevVelocity, TimeStep * Viscosity);
+    
+    // Aplicar un pequeño factor de amortiguación 
+    result *= (1.0 - TimeStep * 0.1);
     
     return float4(result, 0.0, 1.0);
 }
