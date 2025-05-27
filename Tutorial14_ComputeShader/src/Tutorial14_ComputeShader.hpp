@@ -9,6 +9,12 @@
 namespace Diligent
 {
 
+enum class VisualizationMode
+{
+    FLUID_VISUALIZATION, // Sistema actual con fluidos visibles
+    PAINT_CANVAS         // Solo el canvas pintado
+};
+
 class Tutorial14_ComputeShader final : public SampleBase
 {
 public:
@@ -28,11 +34,40 @@ private:
     void CreateConsantBuffer();
     void UpdateUI();
 
-    // Variable para controlar visualización de fluidos
-    bool m_bShowFluidVisualization = true;
+    // Paint System Methods
+    void CreatePaintSystem();
+    void CreateCanvasTexture();
+    void CreateColorPalette();
+    void CreatePaintPipelines();
+    void RenderPaintCanvas();
+    void PaintParticlesToCanvas();
+    void ClearCanvas();
+    void RecreatePaintSRB();
 
     // Sistema de fluidos independiente
     std::unique_ptr<Tutorial14_FluidSimulation> m_pFluidSim;
+
+    // Paint System Variables
+    VisualizationMode m_VisualizationMode = VisualizationMode::FLUID_VISUALIZATION;
+
+    // Paint System Resources
+    RefCntAutoPtr<ITexture>     m_pCanvasTexture;
+    RefCntAutoPtr<ITextureView> m_pCanvasRTV;
+    RefCntAutoPtr<ITextureView> m_pCanvasSRV;
+
+    RefCntAutoPtr<ITexture>     m_pColorPaletteTexture;
+    RefCntAutoPtr<ITextureView> m_pColorPaletteSRV;
+
+    // Paint Pipelines
+    RefCntAutoPtr<IPipelineState>         m_pPaintParticlePSO;
+    RefCntAutoPtr<IShaderResourceBinding> m_pPaintParticleSRB;
+    RefCntAutoPtr<IPipelineState>         m_pRenderCanvasPSO;
+    RefCntAutoPtr<IShaderResourceBinding> m_pRenderCanvasSRB;
+
+    RefCntAutoPtr<IBuffer> m_pPaintConstants;
+
+    // Variable para controlar visualización de fluidos
+    bool m_bShowFluidVisualization = true;
 
     // Variable para viscosidad del fluido
     float m_fViscosity = 0.1f;
@@ -57,6 +92,7 @@ private:
 
     float m_fTimeDelta       = 0;
     float m_fSimulationSpeed = 1;
+    float m_fAccumulatedTime = 0;
 };
 
 } // namespace Diligent

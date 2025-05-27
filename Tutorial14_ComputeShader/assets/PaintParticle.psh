@@ -1,0 +1,63 @@
+// PaintParticle.psh 
+Texture2D g_ColorPalette;
+SamplerState g_LinearSampler;
+
+cbuffer cbPaintConstants
+{
+    float Time;
+    float Chaos;
+    float2 ScreenSize;
+}
+
+struct PSInput 
+{ 
+    float4 Pos        : SV_POSITION; 
+    float2 uv         : TEXCOORD0;
+    float2 worldPos   : TEXCOORD1;
+    float  temp       : TEXCOORD2;
+    float  speed      : TEXCOORD3;
+};
+
+float4 main(PSInput PSIn) : SV_TARGET
+{
+    // Calcular la distancia desde el centro para crear un trazo circular suave
+    float r = length(PSIn.uv.xy - float2(0.5, 0.5)) * 2.0;
+    
+    // Si estamos fuera del círculo, no pintar nada
+    if(r > 1.0)
+        discard;
+
+    // Brush más suave con mejor gradiente
+    float brushIntensity = 1.0 - smoothstep(0.0, 0.9, r);
+    brushIntensity = pow(brushIntensity, 0.6); // Suavizar bordes
+    
+    // Cada partícula mantiene su color personal
+    float2 colorSeed = frac(PSIn.worldPos * 3.7);
+    float3 particleColor = g_ColorPalette.Sample(g_LinearSampler, colorSeed).rgb;
+    
+    // Suavizar colores para mejor mezcla
+    particleColor = lerp(particleColor, float3(0.4, 0.4, 0.4), 0.25);
+    particleColor = saturate(particleColor * 1.15);
+    
+    // Variación dinámica más sutil
+    float dynamicVariation = 0.75 + PSIn.speed * 0.3 + PSIn.temp * 0.25;
+    float3 finalColor = particleColor * dynamicVariation;
+    
+    // MEZCLA DE COLORES MEJORADA
+    // Opacidad más inteligente para mejores mezclas
+    float baseOpacity = 0.08; // Menor opacidad base para mejor acumulación
+    float speedBonus = PSIn.speed * 0.25;
+    float tempBonus = PSIn.temp * 0.15;
+    
+    // El brush se hace más opaco en el centro para mejores trazos
+    float centerBoost = pow(brushIntensity, 2.0) * 0.1;
+    
+    float alpha = brushIntensity * (baseOpacity + speedBonus + tempBonus + centerBoost);
+    alpha = clamp(alpha, 0.0, 0.25); // Limitar para permitir más capas
+    
+    // Añadir un poco de brillo en el centro del trazo
+    float glow = pow(1.0 - r, 4.0) * 0.15;
+    finalColor += float3(glow, glow, glow);
+    
+    return float4(finalColor, alpha);
+}

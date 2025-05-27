@@ -1,0 +1,35 @@
+Texture2D g_CanvasTexture;
+SamplerState g_LinearSampler;
+
+struct PSInput
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+float4 main(PSInput PSIn) : SV_TARGET
+{
+    // Muestrear el color del lienzo
+    float4 canvasColor = g_CanvasTexture.Sample(g_LinearSampler, PSIn.TexCoord);
+    
+    // Si no hay pintura, mostrar un fondo sutil pero agradable
+    if (canvasColor.a < 0.005)
+    {
+        // Fondo con gradiente muy sutil para mejor contraste
+        float2 center = PSIn.TexCoord - float2(0.5, 0.5);
+        float dist = length(center);
+        float vignette = 1.0 - smoothstep(0.3, 1.2, dist);
+        
+        float3 bgColor = lerp(
+            float3(0.01, 0.01, 0.02),  // Esquinas muy oscuras
+            float3(0.03, 0.03, 0.04),  // Centro ligeramente más claro
+            vignette
+        );
+        
+        return float4(bgColor, 1.0);
+    }
+    
+    // Mostrar la pintura con saturación ligeramente mejorada
+    float3 enhancedColor = saturate(canvasColor.rgb * 1.1);
+    return float4(enhancedColor, 1.0);
+}

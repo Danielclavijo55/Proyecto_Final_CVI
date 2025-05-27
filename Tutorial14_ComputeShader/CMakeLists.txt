@@ -25,6 +25,9 @@ set(SHADERS
     assets/FluidPixelShader.fx
     assets/FluidForceShader.fx
     assets/FluidVisualizationShader.fx
+    assets/PaintParticle.vsh
+    assets/PaintParticle.psh
+    assets/RenderCanvas.psh
 )
 
 set(ASSETS)

@@ -324,6 +324,8 @@ void Tutorial14_ComputeShader::CreateParticleBuffers()
     m_pCollideParticlesSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Particles")->Set(pParticleAttribsBufferUAV);
     m_pCollideParticlesSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_ParticleListHead")->Set(pParticleListHeadsBufferSRV);
     m_pCollideParticlesSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_ParticleLists")->Set(pParticleListsBufferSRV);
+
+    RecreatePaintSRB();
 }
 
 void Tutorial14_ComputeShader::CreateConsantBuffer()
@@ -350,8 +352,36 @@ void Tutorial14_ComputeShader::UpdateUI()
         ImGui::SliderFloat("Simulation Speed", &m_fSimulationSpeed, 0.1f, 5.f);
         ImGui::SliderFloat("Fluid Viscosity", &m_fViscosity, 0.0f, 1.0f);
 
-        // Añadir checkbox para visualización de fluidos
-        ImGui::Checkbox("Show Fluid Visualization", &m_bShowFluidVisualization);
+        ImGui::Separator();
+        ImGui::Text("Visualization Mode:");
+
+        // Radio buttons para seleccionar modo de visualización
+        if (ImGui::RadioButton("Fluid Visualization", m_VisualizationMode == VisualizationMode::FLUID_VISUALIZATION))
+        {
+            m_VisualizationMode = VisualizationMode::FLUID_VISUALIZATION;
+        }
+
+        if (ImGui::RadioButton("Paint Canvas", m_VisualizationMode == VisualizationMode::PAINT_CANVAS))
+        {
+            m_VisualizationMode = VisualizationMode::PAINT_CANVAS;
+        }
+
+        // Solo mostrar la opción de fluido si estamos en modo fluido
+        if (m_VisualizationMode == VisualizationMode::FLUID_VISUALIZATION)
+        {
+            ImGui::Checkbox("Show Fluid Visualization", &m_bShowFluidVisualization);
+        }
+        else if (m_VisualizationMode == VisualizationMode::PAINT_CANVAS)
+        {
+            // Controles del Paint Canvas
+            if (ImGui::Button("Clear Canvas"))
+            {
+                ClearCanvas();
+            }
+
+            ImGui::SameLine();
+            ImGui::Text("| Tip: Try different particle counts!");
+        }
     }
     ImGui::End();
 }
@@ -361,6 +391,479 @@ void Tutorial14_ComputeShader::ModifyEngineInitInfo(const ModifyEngineInitInfoAt
     SampleBase::ModifyEngineInitInfo(Attribs);
 
     Attribs.EngineCI.Features.ComputeShaders = DEVICE_FEATURE_STATE_ENABLED;
+}
+
+void Tutorial14_ComputeShader::CreatePaintSystem()
+{
+    try
+    {
+        CreateCanvasTexture();
+        CreateColorPalette();
+        CreatePaintPipelines();
+        LOG_INFO_MESSAGE("Paint system created successfully");
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR_MESSAGE("Failed to create paint system: %s", e.what());
+    }
+}
+
+void Tutorial14_ComputeShader::CreateCanvasTexture()
+{
+    // Crear textura persistente para el canvas
+    TextureDesc CanvasTexDesc;
+    CanvasTexDesc.Name              = "Paint Canvas";
+    CanvasTexDesc.Type              = RESOURCE_DIM_TEX_2D;
+    CanvasTexDesc.Width             = m_pSwapChain->GetDesc().Width;
+    CanvasTexDesc.Height            = m_pSwapChain->GetDesc().Height;
+    CanvasTexDesc.Format            = TEX_FORMAT_RGBA8_UNORM;
+    CanvasTexDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+    CanvasTexDesc.ClearValue.Format = TEX_FORMAT_RGBA8_UNORM;
+    // Canvas inicialmente transparente
+    CanvasTexDesc.ClearValue.Color[0] = 0.0f;
+    CanvasTexDesc.ClearValue.Color[1] = 0.0f;
+    CanvasTexDesc.ClearValue.Color[2] = 0.0f;
+    CanvasTexDesc.ClearValue.Color[3] = 0.0f;
+
+    m_pDevice->CreateTexture(CanvasTexDesc, nullptr, &m_pCanvasTexture);
+
+    if (m_pCanvasTexture)
+    {
+        m_pCanvasRTV = m_pCanvasTexture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET);
+        m_pCanvasSRV = m_pCanvasTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+
+        // Limpiar el canvas inicialmente
+        float4 ClearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+        m_pImmediateContext->ClearRenderTarget(m_pCanvasRTV, ClearColor.Data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+    else
+    {
+        LOG_ERROR_MESSAGE("Failed to create canvas texture");
+    }
+}
+
+void Tutorial14_ComputeShader::CreateColorPalette()
+{
+    // Crear una paleta de colores vivos y primarios
+    const int            PALETTE_SIZE = 256;
+    std::vector<uint8_t> paletteData(PALETTE_SIZE * PALETTE_SIZE * 4);
+
+    // Definir colores primarios vivos
+    struct Color
+    {
+        uint8_t r, g, b, a;
+    };
+    Color primaryColors[] = {
+        {255, 0, 0, 255},    // Rojo brillante
+        {255, 165, 0, 255},  // Naranja vibrante
+        {255, 255, 0, 255},  // Amarillo intenso
+        {0, 255, 0, 255},    // Verde puro
+        {0, 255, 255, 255},  // Cian brillante
+        {0, 0, 255, 255},    // Azul puro
+        {128, 0, 128, 255},  // Púrpura
+        {255, 20, 147, 255}, // Rosa vibrante
+    };
+
+    int numColors = sizeof(primaryColors) / sizeof(Color);
+
+    // Llenar la paleta con gradientes y variaciones
+    for (int y = 0; y < PALETTE_SIZE; y++)
+    {
+        for (int x = 0; x < PALETTE_SIZE; x++)
+        {
+            // Usar coordenadas para crear patrones de colores
+            float fx = static_cast<float>(x) / PALETTE_SIZE;
+            float fy = static_cast<float>(y) / PALETTE_SIZE;
+
+            // Seleccionar color base basado en la posición
+            int   colorIndex = static_cast<int>((fx + fy * 0.7f) * numColors) % numColors;
+            Color baseColor  = primaryColors[colorIndex];
+
+            // Añadir algo de variación para crear transiciones suaves
+            float variation = sin(fx * 8.0f) * cos(fy * 6.0f) * 0.3f + 0.7f;
+
+            int index              = (y * PALETTE_SIZE + x) * 4;
+            paletteData[index + 0] = static_cast<uint8_t>(baseColor.r * variation);
+            paletteData[index + 1] = static_cast<uint8_t>(baseColor.g * variation);
+            paletteData[index + 2] = static_cast<uint8_t>(baseColor.b * variation);
+            paletteData[index + 3] = baseColor.a;
+        }
+    }
+
+    // Crear la textura
+    TextureDesc PaletteTexDesc;
+    PaletteTexDesc.Name      = "Color Palette";
+    PaletteTexDesc.Type      = RESOURCE_DIM_TEX_2D;
+    PaletteTexDesc.Width     = PALETTE_SIZE;
+    PaletteTexDesc.Height    = PALETTE_SIZE;
+    PaletteTexDesc.Format    = TEX_FORMAT_RGBA8_UNORM;
+    PaletteTexDesc.BindFlags = BIND_SHADER_RESOURCE;
+
+    TextureSubResData InitData;
+    InitData.pData  = paletteData.data();
+    InitData.Stride = PALETTE_SIZE * 4;
+
+    TextureData TexData;
+    TexData.pSubResources   = &InitData;
+    TexData.NumSubresources = 1;
+
+    m_pDevice->CreateTexture(PaletteTexDesc, &TexData, &m_pColorPaletteTexture);
+
+    if (m_pColorPaletteTexture)
+    {
+        m_pColorPaletteSRV = m_pColorPaletteTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    }
+    else
+    {
+        LOG_ERROR_MESSAGE("Failed to create color palette texture");
+    }
+}
+
+void Tutorial14_ComputeShader::CreatePaintPipelines()
+{
+    // Crear factory de shaders
+    RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
+    m_pEngineFactory->CreateDefaultShaderSourceStreamFactory(nullptr, &pShaderSourceFactory);
+
+    ShaderCreateInfo ShaderCI;
+    ShaderCI.SourceLanguage                  = SHADER_SOURCE_LANGUAGE_HLSL;
+    ShaderCI.Desc.UseCombinedTextureSamplers = true;
+    ShaderCI.pShaderSourceStreamFactory      = pShaderSourceFactory;
+
+    // === Pipeline para pintar partículas ===
+
+    // Vertex shader para pintar partículas
+    RefCntAutoPtr<IShader> pPaintParticleVS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_VERTEX;
+        ShaderCI.EntryPoint      = "main";
+        ShaderCI.Desc.Name       = "Paint Particle VS";
+        ShaderCI.FilePath        = "PaintParticle.vsh";
+        m_pDevice->CreateShader(ShaderCI, &pPaintParticleVS);
+    }
+
+    // Pixel shader para pintar partículas
+    RefCntAutoPtr<IShader> pPaintParticlePS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_PIXEL;
+        ShaderCI.EntryPoint      = "main";
+        ShaderCI.Desc.Name       = "Paint Particle PS";
+        ShaderCI.FilePath        = "PaintParticle.psh";
+        m_pDevice->CreateShader(ShaderCI, &pPaintParticlePS);
+    }
+
+    // Crear PSO para pintar partículas
+    GraphicsPipelineStateCreateInfo PaintPSOCreateInfo;
+    PaintPSOCreateInfo.PSODesc.Name         = "Paint Particle PSO";
+    PaintPSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
+    PaintPSOCreateInfo.pVS                  = pPaintParticleVS;
+    PaintPSOCreateInfo.pPS                  = pPaintParticlePS;
+
+    auto& PaintGraphicsPipeline                        = PaintPSOCreateInfo.GraphicsPipeline;
+    PaintGraphicsPipeline.NumRenderTargets             = 1;
+    PaintGraphicsPipeline.RTVFormats[0]                = TEX_FORMAT_RGBA8_UNORM;
+    PaintGraphicsPipeline.DSVFormat                    = TEX_FORMAT_UNKNOWN;
+    PaintGraphicsPipeline.PrimitiveTopology            = PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    PaintGraphicsPipeline.RasterizerDesc.CullMode      = CULL_MODE_NONE;
+    PaintGraphicsPipeline.DepthStencilDesc.DepthEnable = False;
+
+    // Configurar blending para acumulación de pintura
+    auto& PaintBlendDesc                           = PaintGraphicsPipeline.BlendDesc;
+    PaintBlendDesc.RenderTargets[0].BlendEnable    = True;
+    PaintBlendDesc.RenderTargets[0].SrcBlend       = BLEND_FACTOR_SRC_ALPHA;
+    PaintBlendDesc.RenderTargets[0].DestBlend      = BLEND_FACTOR_INV_SRC_ALPHA;
+    PaintBlendDesc.RenderTargets[0].BlendOp        = BLEND_OPERATION_ADD;
+    PaintBlendDesc.RenderTargets[0].SrcBlendAlpha  = BLEND_FACTOR_ONE;
+    PaintBlendDesc.RenderTargets[0].DestBlendAlpha = BLEND_FACTOR_ONE;
+    PaintBlendDesc.RenderTargets[0].BlendOpAlpha   = BLEND_OPERATION_ADD;
+
+    PaintPSOCreateInfo.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    m_pDevice->CreateGraphicsPipelineState(PaintPSOCreateInfo, &m_pPaintParticlePSO);
+
+    // === Pipeline para renderizar canvas ===
+
+    // Pixel shader para renderizar canvas
+    RefCntAutoPtr<IShader> pRenderCanvasPS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_PIXEL;
+        ShaderCI.EntryPoint      = "main";
+        ShaderCI.Desc.Name       = "Render Canvas PS";
+        ShaderCI.FilePath        = "RenderCanvas.psh";
+        m_pDevice->CreateShader(ShaderCI, &pRenderCanvasPS);
+    }
+
+    // Usar el vertex shader del fluido para el fullscreen quad
+    RefCntAutoPtr<IShader> pFullScreenVS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_VERTEX;
+        ShaderCI.EntryPoint      = "main";
+        ShaderCI.Desc.Name       = "Full Screen VS";
+        ShaderCI.FilePath        = "FluidVertexShader.fx";
+        m_pDevice->CreateShader(ShaderCI, &pFullScreenVS);
+    }
+
+    // Crear PSO para renderizar canvas
+    GraphicsPipelineStateCreateInfo CanvasPSOCreateInfo;
+    CanvasPSOCreateInfo.PSODesc.Name         = "Render Canvas PSO";
+    CanvasPSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_GRAPHICS;
+    CanvasPSOCreateInfo.pVS                  = pFullScreenVS;
+    CanvasPSOCreateInfo.pPS                  = pRenderCanvasPS;
+
+    auto& CanvasGraphicsPipeline                        = CanvasPSOCreateInfo.GraphicsPipeline;
+    CanvasGraphicsPipeline.NumRenderTargets             = 1;
+    CanvasGraphicsPipeline.RTVFormats[0]                = m_pSwapChain->GetDesc().ColorBufferFormat;
+    CanvasGraphicsPipeline.DSVFormat                    = TEX_FORMAT_UNKNOWN;
+    CanvasGraphicsPipeline.PrimitiveTopology            = PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    CanvasGraphicsPipeline.RasterizerDesc.CullMode      = CULL_MODE_NONE;
+    CanvasGraphicsPipeline.DepthStencilDesc.DepthEnable = False;
+
+    // Sin blending para el canvas final
+    CanvasGraphicsPipeline.BlendDesc.RenderTargets[0].BlendEnable = False;
+
+    CanvasPSOCreateInfo.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    m_pDevice->CreateGraphicsPipelineState(CanvasPSOCreateInfo, &m_pRenderCanvasPSO);
+
+    // === Crear buffer de constantes para paint ===
+    BufferDesc PaintBuffDesc;
+    PaintBuffDesc.Name           = "Paint constants buffer";
+    PaintBuffDesc.Usage          = USAGE_DYNAMIC;
+    PaintBuffDesc.BindFlags      = BIND_UNIFORM_BUFFER;
+    PaintBuffDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    PaintBuffDesc.Size           = sizeof(float4); // Time, Chaos, ScreenSize.x, ScreenSize.y
+    m_pDevice->CreateBuffer(PaintBuffDesc, nullptr, &m_pPaintConstants);
+
+    // === Crear SRBs ===
+    if (m_pPaintParticlePSO)
+    {
+        m_pPaintParticlePSO->CreateShaderResourceBinding(&m_pPaintParticleSRB, true);
+
+        // Configurar SRB para pintar partículas
+        if (m_pPaintParticleSRB)
+        {
+            // Vincular buffer de partículas
+            IBufferView* pParticleAttribsBufferSRV = m_pParticleAttribsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE);
+            auto*        pParticlesVar             = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_VERTEX, "g_Particles");
+            if (pParticlesVar)
+            {
+                pParticlesVar->Set(pParticleAttribsBufferSRV);
+            }
+
+            // Vincular paleta de colores
+            if (m_pColorPaletteSRV)
+            {
+                auto* pPaletteVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_ColorPalette");
+                if (pPaletteVar)
+                {
+                    pPaletteVar->Set(m_pColorPaletteSRV);
+                }
+            }
+
+            // Crear y vincular sampler para la paleta
+            SamplerDesc SamDesc;
+            SamDesc.MinFilter = FILTER_TYPE_LINEAR;
+            SamDesc.MagFilter = FILTER_TYPE_LINEAR;
+            SamDesc.MipFilter = FILTER_TYPE_LINEAR;
+            SamDesc.AddressU  = TEXTURE_ADDRESS_WRAP; // WRAP para repetir la paleta
+            SamDesc.AddressV  = TEXTURE_ADDRESS_WRAP;
+
+            RefCntAutoPtr<ISampler> pPaletteSampler;
+            m_pDevice->CreateSampler(SamDesc, &pPaletteSampler);
+
+            auto* pSamplerVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_LinearSampler");
+            if (pSamplerVar)
+            {
+                pSamplerVar->Set(pPaletteSampler);
+            }
+
+            // Vincular buffer de constantes
+            auto* pConstantsVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "cbPaintConstants");
+            if (pConstantsVar)
+            {
+                pConstantsVar->Set(m_pPaintConstants);
+            }
+        }
+    }
+
+    if (m_pRenderCanvasPSO)
+    {
+        m_pRenderCanvasPSO->CreateShaderResourceBinding(&m_pRenderCanvasSRB, true);
+
+        // Vincular textura del canvas
+        if (m_pRenderCanvasSRB && m_pCanvasSRV)
+        {
+            auto* pCanvasVar = m_pRenderCanvasSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_CanvasTexture");
+            if (pCanvasVar)
+            {
+                pCanvasVar->Set(m_pCanvasSRV);
+            }
+
+            // Crear y vincular sampler
+            SamplerDesc SamDesc;
+            SamDesc.MinFilter = FILTER_TYPE_LINEAR;
+            SamDesc.MagFilter = FILTER_TYPE_LINEAR;
+            SamDesc.MipFilter = FILTER_TYPE_LINEAR;
+            SamDesc.AddressU  = TEXTURE_ADDRESS_CLAMP;
+            SamDesc.AddressV  = TEXTURE_ADDRESS_CLAMP;
+
+            RefCntAutoPtr<ISampler> pSampler;
+            m_pDevice->CreateSampler(SamDesc, &pSampler);
+
+            auto* pSamplerVar = m_pRenderCanvasSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_LinearSampler");
+            if (pSamplerVar)
+            {
+                pSamplerVar->Set(pSampler);
+            }
+        }
+    }
+
+    LOG_INFO_MESSAGE("Paint pipelines created successfully");
+}
+
+void Tutorial14_ComputeShader::RenderPaintCanvas()
+{
+    if (!m_pRenderCanvasPSO || !m_pRenderCanvasSRB)
+        return;
+
+    auto* pRTV = m_pSwapChain->GetCurrentBackBufferRTV();
+
+    // Configurar render target
+    m_pImmediateContext->SetRenderTargets(1, &pRTV, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    // Configurar pipeline
+    m_pImmediateContext->SetPipelineState(m_pRenderCanvasPSO);
+    m_pImmediateContext->CommitShaderResources(m_pRenderCanvasSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    // Configurar viewport
+    Viewport VP;
+    VP.Width    = static_cast<float>(m_pSwapChain->GetDesc().Width);
+    VP.Height   = static_cast<float>(m_pSwapChain->GetDesc().Height);
+    VP.MinDepth = 0.0f;
+    VP.MaxDepth = 1.0f;
+    VP.TopLeftX = 0.0f;
+    VP.TopLeftY = 0.0f;
+    m_pImmediateContext->SetViewports(1, &VP, 0, 0);
+
+    // Dibujar fullscreen quad
+    DrawAttribs drawAttrs;
+    drawAttrs.NumVertices = 4;
+    m_pImmediateContext->Draw(drawAttrs);
+}
+
+void Tutorial14_ComputeShader::PaintParticlesToCanvas()
+{
+    if (!m_pPaintParticlePSO || !m_pPaintParticleSRB || !m_pCanvasRTV)
+        return;
+
+    // Actualizar buffer de constantes de paint
+    if (m_pPaintConstants)
+    {
+        struct PaintConstants
+        {
+            float  Time;
+            float  Chaos;
+            float2 ScreenSize;
+        };
+
+        MapHelper<PaintConstants> Constants(m_pImmediateContext, m_pPaintConstants, MAP_WRITE, MAP_FLAG_DISCARD);
+        Constants->Time       = m_fAccumulatedTime; // Pasar tiempo acumulado
+        Constants->Chaos      = 1.0f;
+        Constants->ScreenSize = float2(
+            static_cast<float>(m_pSwapChain->GetDesc().Width),
+            static_cast<float>(m_pSwapChain->GetDesc().Height));
+    }
+
+    // Configurar render target al canvas
+    ITextureView* pCanvasRTVs[] = {m_pCanvasRTV};
+    m_pImmediateContext->SetRenderTargets(1, pCanvasRTVs, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    // Configurar viewport para el canvas
+    Viewport VP;
+    VP.Width    = static_cast<float>(m_pSwapChain->GetDesc().Width);
+    VP.Height   = static_cast<float>(m_pSwapChain->GetDesc().Height);
+    VP.MinDepth = 0.0f;
+    VP.MaxDepth = 1.0f;
+    VP.TopLeftX = 0.0f;
+    VP.TopLeftY = 0.0f;
+    m_pImmediateContext->SetViewports(1, &VP, 0, 0);
+
+    // Configurar pipeline de pintura
+    m_pImmediateContext->SetPipelineState(m_pPaintParticlePSO);
+    m_pImmediateContext->CommitShaderResources(m_pPaintParticleSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    // Dibujar las partículas como instancias
+    DrawAttribs drawAttrs;
+    drawAttrs.NumVertices  = 4; // Quad
+    drawAttrs.NumInstances = static_cast<Uint32>(m_NumParticles);
+    m_pImmediateContext->Draw(drawAttrs);
+}
+
+void Tutorial14_ComputeShader::ClearCanvas()
+{
+    if (m_pCanvasRTV)
+    {
+        // Limpiar el canvas a transparente
+        float4 ClearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+        m_pImmediateContext->ClearRenderTarget(m_pCanvasRTV, ClearColor.Data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        LOG_INFO_MESSAGE("Canvas cleared");
+    }
+}
+
+void Tutorial14_ComputeShader::RecreatePaintSRB()
+{
+    if (!m_pPaintParticlePSO)
+        return;
+
+    // Recrear el SRB desde cero
+    m_pPaintParticleSRB.Release();
+    m_pPaintParticlePSO->CreateShaderResourceBinding(&m_pPaintParticleSRB, true);
+
+    // Configurar todas las variables del SRB nuevamente
+    if (m_pPaintParticleSRB)
+    {
+        // Vincular buffer de partículas (recién creado)
+        IBufferView* pParticleAttribsBufferSRV = m_pParticleAttribsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE);
+        auto*        pParticlesVar             = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_VERTEX, "g_Particles");
+        if (pParticlesVar)
+        {
+            pParticlesVar->Set(pParticleAttribsBufferSRV);
+        }
+
+        // Vincular paleta de colores
+        if (m_pColorPaletteSRV)
+        {
+            auto* pPaletteVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_ColorPalette");
+            if (pPaletteVar)
+            {
+                pPaletteVar->Set(m_pColorPaletteSRV);
+            }
+        }
+
+        // Crear y vincular sampler para la paleta
+        SamplerDesc SamDesc;
+        SamDesc.MinFilter = FILTER_TYPE_LINEAR;
+        SamDesc.MagFilter = FILTER_TYPE_LINEAR;
+        SamDesc.MipFilter = FILTER_TYPE_LINEAR;
+        SamDesc.AddressU  = TEXTURE_ADDRESS_WRAP;
+        SamDesc.AddressV  = TEXTURE_ADDRESS_WRAP;
+
+        RefCntAutoPtr<ISampler> pPaletteSampler;
+        m_pDevice->CreateSampler(SamDesc, &pPaletteSampler);
+
+        auto* pSamplerVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_LinearSampler");
+        if (pSamplerVar)
+        {
+            pSamplerVar->Set(pPaletteSampler);
+        }
+
+        // Vincular buffer de constantes
+        auto* pConstantsVar = m_pPaintParticleSRB->GetVariableByName(SHADER_TYPE_PIXEL, "cbPaintConstants");
+        if (pConstantsVar)
+        {
+            pConstantsVar->Set(m_pPaintConstants);
+        }
+    }
 }
 
 void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
@@ -385,6 +888,7 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
         LOG_ERROR_MESSAGE("Failed to create fluid simulation: %s", e.what());
         // Continuar sin fluidos si hay error
     }
+    CreatePaintSystem();
 }
 
 // Render a frame
@@ -499,11 +1003,22 @@ void Tutorial14_ComputeShader::Render()
     drawAttrs.NumInstances = static_cast<Uint32>(m_NumParticles);
     m_pImmediateContext->Draw(drawAttrs);
 
-    // Renderizar visualización del fluido al final (para que aparezca encima de todo)
-    if (m_pFluidSim && m_bShowFluidVisualization)
+    // Renderizar según el modo seleccionado
+    if (m_VisualizationMode == VisualizationMode::FLUID_VISUALIZATION)
     {
-        // Pasar el RTV correcto para renderizar la visualización
-        m_pFluidSim->RenderFluidVisualization(pRTV);
+        // Renderizar visualización del fluido al final (para que aparezca encima)
+        if (m_pFluidSim && m_bShowFluidVisualization)
+        {
+            m_pFluidSim->RenderFluidVisualization(pRTV);
+        }
+    }
+    else if (m_VisualizationMode == VisualizationMode::PAINT_CANVAS)
+    {
+        // Pintar las partículas al canvas
+        PaintParticlesToCanvas();
+
+        // Renderizar el canvas final
+        RenderPaintCanvas();
     }
 }
 
@@ -513,6 +1028,7 @@ void Tutorial14_ComputeShader::Update(double CurrTime, double ElapsedTime)
     UpdateUI();
 
     m_fTimeDelta = static_cast<float>(ElapsedTime);
+    m_fAccumulatedTime += m_fTimeDelta;
 
     // Actualizar sistema de fluidos si existe
     if (m_pFluidSim)
